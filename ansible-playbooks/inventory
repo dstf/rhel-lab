@@ -1,0 +1,6 @@
+[myself]
+workstation.example.com
+
+[servers]
+server1.example.com
+server2.example.com
