@@ -175,7 +175,7 @@ installPrometheus() {
         dnf install wget -y
     fi
     #install tar
-    yum install tar -a
+    yum install tar
     # Download latest release
     local _binary=`curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest | grep browser_download_url | grep "linux-amd64" | awk '{print $2}' | tr -d '\"'`
     wget $_binary; tar -xvf $(ls prometheus*.tar.gz)
