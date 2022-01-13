@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 #
 # Install Prometheus, Node Exporter to CentOS
-# Initial script
-# Created by Yevgeniy Goncharov, https://sys-adm.in
-# Creation at (c) 2021.
-#
+
 
 # Envs
 # ---------------------------------------------------\
@@ -177,7 +174,8 @@ installPrometheus() {
     if ! type "wget" >/dev/null 2>&1; then
         dnf install wget -y
     fi
-    
+    #install tar
+    yum install tar -a
     # Download latest release
     local _binary=`curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest | grep browser_download_url | grep "linux-amd64" | awk '{print $2}' | tr -d '\"'`
     wget $_binary; tar -xvf $(ls prometheus*.tar.gz)
