@@ -1,23 +1,87 @@
-#!/bin/bash
-yum -y update
+#!/usr/bin/env bash
+#
+# Install Prometheus, Node Exporter to CentOS
+# Initial script
+# Created by Yevgeniy Goncharov, https://sys-adm.in
+# Creation at (c) 2021.
+#
 
-## Install Prometheus
-useradd --no-create-home -s /bin/false prometheus
-mkdir /etc/prometheus
-mkdir /var/lib/prometheus
-chown prometheus:prometheus /etc/prometheus
-chown prometheus:prometheus /var/lib/prometheus
-cd /tmp
-wget https://github.com/prometheus/prometheus/releases/download/v2.22.2/prometheus-2.22.2.linux-amd64.tar.gz
-tar xzvf prometheus-2.22.2.linux-amd64.tar.gz 
-mv prometheus-2.22.2.linux-amd64/* /var/lib/prometheus/
-chown -R prometheus:prometheus /var/lib/prometheus
-cd
-mv /var/lib/prometheus/prometheus.yml /etc/prometheus/
-ln -s /var/lib/prometheus/prometheus /usr/local/bin/prometheus
+# Envs
+# ---------------------------------------------------\
+PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin
+SCRIPT_PATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
 
-tee /usr/lib/systemd/system/prometheus.service << EOF
-[Unit]
+# POSIX / Reset in case getopts has been used previously in the shell.
+OPTIND=1
+
+_configPrometheus="/etc/prometheus/prometheus.yml"
+_install=$SCRIPT_PATH/installs
+_serverIP=`hostname -I | awk '{print $1}'`
+
+# Functions
+
+# Help information
+usage() {
+
+    echo -e "You can also use this script for automate install prometheus stack:"
+    echo -e "$ON_CHECK" "./install.sh -a : Auto-install and configure all software"
+    exit 1
+
+}
+
+confirm() {
+    # call with a prompt string or use a default
+    read -r -p "${1:-Are you sure? [y/N]} " response
+    case "$response" in
+        [yY][eE][sS]|[yY])
+            true
+            ;;
+        *)
+            false
+            ;;
+    esac
+}
+
+_exit() {
+    echo "Bye bye!"
+    exit 0
+}
+
+# Options
+setupNodeExporter() {
+
+echo -e '[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+[Install]
+WantedBy=multi-user.target' > /etc/systemd/system/node_exporter.service
+
+systemctl daemon-reload
+systemctl enable --now node_exporter
+
+if [[ "$1" -eq "auto" ]]; then
+    firewall-cmd --permanent --add-port=9100/tcp
+else
+    if confirm "Setup firewalld to INternal zone? (y/n or enter)"; then
+        firewall-cmd --permanent --add-port=9100/tcp --zone=internal
+    else
+        firewall-cmd --permanent --add-port=9100/tcp
+    fi
+fi
+
+firewall-cmd --reload
+
+}
+
+setupPrometheusSVC() {
+    # setup systemd
+echo -e '[Unit]
 Description=Prometheus
 Wants=network-online.target
 After=network-online.target
@@ -26,50 +90,126 @@ User=prometheus
 Group=prometheus
 Type=simple
 ExecStart=/usr/local/bin/prometheus \
---config.file /etc/prometheus/prometheus.yml \
---storage.tsdb.path /var/lib/prometheus/ \
---web.console.templates=/var/lib/prometheus/consoles \
---web.console.libraries=/var/lib/prometheus/console_libraries
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries
 [Install]
-WantedBy=multi-user.target
-EOF
+WantedBy=multi-user.target' > /etc/systemd/system/prometheus.service
 
-systemctl enable prometheus
-systemctl start prometheus
+systemctl daemon-reload
+systemctl enable --now prometheus
 
-## Install Node exporter
-cd /tmp
-wget https://github.com/prometheus/node_exporter/releases/download/v1.0.1/node_exporter-1.0.1.linux-amd64.tar.gz
-tar xzvf node_exporter-1.0.1.linux-amd64.tar.gz 
-mkdir -p /var/lib/prometheus/node_exporter
-mv node_exporter-1.0.1.linux-amd64/* /var/lib/prometheus/node_exporter
-cd
-chown -R prometheus:prometheus /var/lib/prometheus/node_exporter/
+if [[ "$1" -eq "auto" ]]; then
+    firewall-cmd --permanent --add-port=9090/tcp
+else
+    if confirm "Setup firewalld to INternal zone? (y/n or enter)"; then
+        firewall-cmd --permanent --add-port=9090/tcp --zone=internal
+    else
+        firewall-cmd --permanent --add-port=9090/tcp
+    fi
+fi
 
-tee /usr/lib/systemd/system/node_exporter.service << EOF
-[Unit]
-Description=Node Exporter
-Wants=network-online.target
-After=network-online.target
-[Service]
-User=prometheus
-ExecStart=/var/lib/prometheus/node_exporter/node_exporter
-[Install]
-WantedBy=default.target
-EOF
+firewall-cmd --reload
 
-systemctl enable node_exporter
-systemctl start node_exporter
+}
 
-tee -a /etc/prometheus/prometheus.yml << EOF
+# Installers
+installExporter() {
+
+    # Temporary catalog
+    cd $SCRIPT_PATH
+
+    # Temporary catalog
+    if [[ ! -d "$_install" ]]; then
+        mkdir $_install
+    else
+        rm -rf $_install; mkdir $_install
+    fi
+
+    cd $_install; 
+
+    # Check is wget installed
+    if ! type "wget" >/dev/null 2>&1; then
+        dnf install wget -y
+    fi
+
+    # Download Node Exporter
+    local _binary=`curl -s https://api.github.com/repos/prometheus/node_exporter/releases/latest | grep browser_download_url | grep "linux-amd64" | awk '{print $2}' | tr -d '\"'`
+    wget $_binary; tar -xvf $(ls node_exporter*.tar.gz)
+    cd `ls -l | grep '.linux-amd[0-9]*$' | awk '{print $9}'`
+    cp node_exporter /usr/local/bin
+
+    # Create user
+    useradd --no-create-home --shell /bin/false node_exporter
+    chown node_exporter:node_exporter /usr/local/bin/node_exporter
+
+    # Setup systemd unit
+    setupNodeExporter
+
+    # User suggestion
+    echo -e "Add the following lines to /etc/prometheus/prometheus.yml:
   - job_name: 'node_exporter'
+    scrape_interval: 5s
     static_configs:
-    - targets: ['localhost:9100']
-EOF
-systemctl restart prometheus
+      - targets: ['localhost:9100']
+    or just add to exist yml file to node_exporter section:
+      - targets: ['$_serverIP:9100'] 
+"
+    echo "node_exporter is installed!"
 
-## Install Grafana
-tee /etc/yum.repos.d/grafana.repo << EOF
+}
+
+installPrometheus() {
+
+    cd $SCRIPT_PATH; 
+
+    # Temporary catalog
+    if [[ ! -d "$_install" ]]; then
+        mkdir $_install
+    else
+        rm -rf $_install; mkdir $_install
+    fi
+
+    cd $_install; 
+    
+    # Check is wget installed
+    if ! type "wget" >/dev/null 2>&1; then
+        dnf install wget -y
+    fi
+    
+    # Download latest release
+    local _binary=`curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest | grep browser_download_url | grep "linux-amd64" | awk '{print $2}' | tr -d '\"'`
+    wget $_binary; tar -xvf $(ls prometheus*.tar.gz)
+    cd `ls -l | grep '.linux-amd[0-9]*$' | awk '{print $9}'`
+
+    # User in catalogs creation 
+    useradd -m -s /bin/false prometheus
+    mkdir /var/lib/prometheus /etc/prometheus 
+    chown prometheus:prometheus /etc/prometheus
+    chown prometheus:prometheus /var/lib/prometheus
+
+    # Copy executable and set permissions
+    cp prometheus  /usr/local/bin
+    cp promtool  /usr/local/bin
+
+    chown prometheus:prometheus /usr/local/bin/prometheus
+    chown prometheus:prometheus /usr/local/bin/promtool
+
+    # Copy config
+    cp -r consoles /etc/prometheus
+    cp -r console_libraries /etc/prometheus
+    cp prometheus.yml /etc/prometheus/prometheus.yml
+
+    # Setup systemd unit
+    setupPrometheusSVC
+
+    echo "Prometheus installed!"
+}
+
+installGrafana() {
+  
+  echo -e "
 [grafana]
 name=grafana
 baseurl=https://packages.grafana.com/oss/rpm
@@ -79,12 +219,110 @@ gpgcheck=1
 gpgkey=https://packages.grafana.com/gpg.key
 sslverify=1
 sslcacert=/etc/pki/tls/certs/ca-bundle.crt
-EOF
+" > /etc/yum.repos.d/grafana.repo
 
-yum -y makecache fast
-yum install -y grafana
-systemctl enable grafana-server
-systemctl start grafana-server
+yum install grafana -y
 
-echo "grafana is installed, please check on http://<server>:3000"
+systemctl daemon-reload
+systemctl enable --now grafana-server
+sleep 2
 
+grafana-cli plugins install grafana-piechart-panel
+sed -i 's/;admin_user/admin_user/g' /etc/grafana/grafana.ini
+sed -i 's/;admin_password/admin_password/g' /etc/grafana/grafana.ini
+sed -i 's/;disable_sanitize_html.*/disable_sanitize_html = true/g' /etc/grafana/grafana.ini
+grafana-cli --config "/etc/grafana/grafana.ini" admin reset-admin-password NEWPASS
+systemctl restart grafana-server
+# systemctl status grafana-server
+
+if [[ "$1" -eq "auto" ]]; then
+    firewall-cmd --permanent --add-port=3000/tcp
+else
+    if confirm "Setup firewalld to INternal zone? (y/n or enter)"; then
+        firewall-cmd --permanent --add-port=3000/tcp --zone=internal
+    else
+        firewall-cmd --permanent --add-port=3000/tcp
+    fi
+fi
+
+firewall-cmd --reload
+
+}
+
+auto_install() {
+    installPrometheus auto
+    installExporter auto
+    installGrafana auto
+}
+
+function setChoise()
+{
+    echo -e "What do you want install?\n"
+    echo "   1) Exporter"
+    echo "   2) Prometheus"
+    echo "   3) Grafana"
+    echo "   4) Help"
+    echo "   5) Exit"
+    echo ""
+    read -p "Install [1-4]: " -e -i 5 INSTALL_CHOICE
+
+    case $INSTALL_CHOICE in
+        1)
+        _installExporter=1
+        ;;
+        2)
+        _installServer=1
+        ;;
+        3)
+        _installGrafana=1
+        ;;
+        4)
+        usage
+        ;;
+        5)
+        _exit
+        ;;
+    esac
+
+    if [[ "$_installExporter" == 1 ]]; then
+        if confirm "Install Node Exporter (y/n)?"; then
+                installExporter
+        fi
+    fi
+
+    if [[ "$_installServer" == 1 ]]; then
+        if confirm "Install Prometheus (y/n)?"; then
+
+            if [ -f $_configPrometheus ]; then
+                echo "Prometheus already installed!"
+                _exit
+            else
+                installPrometheus
+            fi
+
+        fi
+    fi
+
+    if [[ "$_installGrafana" == 1 ]]; then
+        if confirm "Install Grafana (y/n)?"; then
+                installGrafana
+        fi
+    fi
+
+}
+
+# setChoise
+
+if [[ -z "$1" ]]; then
+    setChoise
+else
+    # Checks arguments
+    while [[ "$#" -gt 0 ]]; do
+        case $1 in
+                -a|--auto) auto_install; ;;
+                -h|--help) usage ;;
+            *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        esac
+        shift
+    done
+fi
