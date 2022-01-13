@@ -130,7 +130,7 @@ installExporter() {
     if ! type "wget" >/dev/null 2>&1; then
         dnf install wget -y
     fi
-
+    yum install tar
     # Download Node Exporter
     local _binary=`curl -s https://api.github.com/repos/prometheus/node_exporter/releases/latest | grep browser_download_url | grep "linux-amd64" | awk '{print $2}' | tr -d '\"'`
     wget $_binary; tar -xvf $(ls node_exporter*.tar.gz)
